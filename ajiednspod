@@ -1,0 +1,105 @@
+#!/bin/sh
+#
+
+############################################
+# ajiednspod v1.0
+#
+# 使用DNSPod动态更新DNS的IPv6记录
+#
+# 作者: ajieOwO, https://github.com/ajieOwO
+#
+# 用法：参阅ajiednspod
+#
+############################################
+
+export PATH=$PATH:/sbin
+export ajieToken
+
+if ! type ajieLog >/dev/null 2>&1; then
+    ajieLog() {
+        >&2 echo $@
+        logger $@
+    }
+fi
+
+dnspodApi() {
+    local agent="AnripDdns/6.2.0(wang@rehiy.com)"
+    local dnsapi="https://dnsapi.cn/${1:?'Info.Version'}"
+    local params="login_token=$ajieToken&format=json&lang=en&$2"
+
+    if type curl >/dev/null 2>&1; then
+        curl -4 -s -A $agent -d $params $dnsapi
+    elif ! wget --help 2>&1 | grep -qs BusyBox; then
+        wget -4 -q -O- --no-check-certificate -U $agent --post-data $params $dnsapi
+    else
+        wget -q -O- --no-check-certificate -U $agent --post-data $params $dnsapi
+    fi
+}
+
+updateDNSRecord(){
+	local message
+	local code
+
+	ajieLog "> 正在更新DNS记录..."
+
+	message=$(dnspodApi "Record.Info" "domain=$1&record_id=$3")
+	code=$(echo $message | grep -Po 'code[" :]+\K[^"]+')
+	
+	if [ $code != 1 ];
+	then
+		ajieLog "> 错误：$(echo $message | grep -Po 'message[" :]+\K[^"]+')"
+		return 1
+	fi
+
+	message=$(dnspodApi "Record.Ddns" "domain=$1&sub_domain=$2&record_id=$3&record_type=AAAA&value=$4&record_line=%e9%bb%98%e8%ae%a4")
+
+	code=$(echo $message | grep -Po 'code[" :]+\K[^"]+')
+
+	if [ $code != 1 ];
+	then
+		ajieLog "> 错误：$(echo $message | grep -Po 'message[" :]+\K[^"]+')"
+		return 1
+	else
+		ajieLog "> DNS记录已更新"
+	fi
+}
+
+refreshDNSRecord(){
+	local hostIp
+	local recordId
+	local recordIp
+	local message
+
+	ajieLog "==== ddnspod v1.0 启动 ===="
+	ajieLog "> 域名：$2.$1"
+
+	prefix=$(ip -6 route | grep via | grep -oE '2[0-9a-fA-F:]+::' | head -n 1)
+	prefix=${prefix%::}
+
+	hostIp=$(ip -6 address | grep $prefix | head -n 1 | grep -oE '[0-9a-fA-F:]{10,}')
+
+	if [ -z "$hostIp" ];
+	then
+		ajieLog "> 未找到本机IPv6地址"
+		return 1
+	fi
+
+	message=$(dnspodApi "Record.List" "domain=$1&sub_domain=$2&record_type=AAAA")
+	recordId=$(echo $message | grep -Po '\[{"id[" :]+\K[^"]+')
+	recordIp=$(echo $message | grep -Po 'value[" :]+\K[^"]+')
+
+	if [ $recordId -gt 0 ] 2>/dev/null;
+	then
+		if [ $hostIp = $recordIp ];
+		then
+			ajieLog "> IP地址未变动：$recordIp"
+			return 1
+		fi
+	else
+		ajieLog "> 错误：$(echo $message | grep -Po 'message[" :]+\K[^"]+')"
+		return 1
+	fi
+
+	ajieLog "> IP地址发生变动：$hostIp"
+	updateDNSRecord "$1" "$2" "$recordId" "$hostIp"
+}
